@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS login_codes (
+  email VARCHAR(255) PRIMARY KEY,
+  code VARCHAR(6) NOT NULL,
+  expires BIGINT NOT NULL
+);
