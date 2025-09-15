@@ -1,8 +1,20 @@
 CREATE TABLE IF NOT EXISTS orders (
   id SERIAL PRIMARY KEY,
   email VARCHAR(255) NOT NULL,
-  product VARCHAR(255) NOT NULL,
-  quantity INTEGER NOT NULL,
+  customer_name VARCHAR(255),
   address TEXT NOT NULL,
+  location_lat DOUBLE PRECISION,
+  location_lng DOUBLE PRECISION,
+  cylinder_type VARCHAR(255),
+  filled VARCHAR(10),
+  unique_code VARCHAR(10),
+  status VARCHAR(50),
+  date DATE,
+  amount_paid INTEGER,
+  notes TEXT,
+  payment_method VARCHAR(50),
+  service_type VARCHAR(20),
+  time_slot VARCHAR(20),
+  delivery_window VARCHAR(20),
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
