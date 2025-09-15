@@ -1,0 +1,26 @@
+// Install connect-pg-simple and update session store
+// 1. npm install connect-pg-simple
+// 2. Update server/index.js to use connect-pg-simple
+
+const session = require('express-session');
+const pgSession = require('connect-pg-simple')(session);
+const { Pool } = require('pg');
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+});
+
+app.use(session({
+  store: new pgSession({
+    pool: pool,
+    tableName: 'session',
+  }),
+  secret: process.env.SESSION_SECRET || 'tapgas_secret',
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+    httpOnly: true,
+    secure: false, // set to true if using HTTPS
+  },
+}));

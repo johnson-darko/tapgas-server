@@ -1,9 +1,11 @@
 const express = require('express');
 const bodyParser = require('body-parser');
-const { Pool } = require('pg');
 const cors = require('cors');
 require('dotenv').config();
 
+const session = require('express-session');
+const pgSession = require('connect-pg-simple')(session);
+const { Pool } = require('pg');
 
 const app = express();
 app.use(bodyParser.json());
@@ -11,8 +13,16 @@ app.use(cors({
   origin: 'http://localhost:5173',
   credentials: true
 }));
-const session = require('express-session');
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+});
+
 app.use(session({
+  store: new pgSession({
+    pool: pool,
+    tableName: 'session',
+  }),
   secret: process.env.SESSION_SECRET || 'tapgas_secret',
   resave: false,
   saveUninitialized: false,
@@ -23,10 +33,13 @@ app.use(session({
   },
 }));
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+// Global API request logger (only logs /auth and /order)
+app.use((req, res, next) => {
+  if (req.path.startsWith('/auth') || req.path.startsWith('/order')) {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+  }
+  next();
 });
-
 
 function generateCode() {
   return Math.floor(100000 + Math.random() * 900000).toString();
@@ -51,12 +64,14 @@ app.post('/auth/verify-code', async (req, res) => {
   if (row.code !== code || Date.now() > row.expires) return res.status(400).json({ error: 'Invalid or expired code' });
   // Create/find user, set session
   req.session.user = { email };
+  console.log('Session after verify-code:', req.session);
   res.json({ success: true, user: { email } });
 });
 
 const PORT = process.env.PORT || 4000;
 // Order placement endpoint
 app.post('/order', async (req, res) => {
+  console.log('Session on /order:', req.session);
   if (!req.session.user) {
     return res.status(401).json({ error: 'Not logged in' });
   }
