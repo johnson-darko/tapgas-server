@@ -1,3 +1,4 @@
+// ...existing code...
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
@@ -27,7 +28,7 @@ app.use(session({
   resave: false,
   saveUninitialized: false,
   cookie: {
-    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+    maxAge: 60 * 24 * 60 * 60 * 1000, // 60 days (2 months)
     httpOnly: true,
     secure: false, // set to true if using HTTPS
   },
@@ -63,9 +64,19 @@ app.post('/auth/verify-code', async (req, res) => {
   const row = result.rows[0];
   if (row.code !== code || Date.now() > row.expires) return res.status(400).json({ error: 'Invalid or expired code' });
   // Create/find user, set session
-  req.session.user = { email };
+  // Insert user if not exists
+  await pool.query(
+    `INSERT INTO users (email) VALUES ($1)
+     ON CONFLICT (email) DO NOTHING`,
+    [email]
+  );
+  // Always fetch user role after insert
+  const userResult = await pool.query('SELECT role FROM users WHERE email = $1', [email]);
+  const role = userResult.rows[0]?.role || 'customer';
+  console.log('Fetched user role for', email, ':', role); // DEBUG LOG
+  req.session.user = { email, role };
   console.log('Session after verify-code:', req.session);
-  res.json({ success: true, user: { email } });
+  res.json({ success: true, user: { email, role } });
 });
 
 const PORT = process.env.PORT || 4000;
@@ -118,6 +129,19 @@ app.post('/order', async (req, res) => {
       timeSlot || null,
       deliveryWindow || null
     ]
+  );
+  res.json({ success: true });
+});
+
+
+// Update user profile (name, phone_number)
+app.post('/profile', async (req, res) => {
+  if (!req.session.user) return res.status(401).json({ error: 'Not logged in' });
+  const { name, phone_number } = req.body;
+  if (!name || !phone_number) return res.status(400).json({ error: 'Name and phone number required' });
+  await pool.query(
+    'UPDATE users SET name = $1, phone_number = $2 WHERE email = $3',
+    [name, phone_number, req.session.user.email]
   );
   res.json({ success: true });
 });
