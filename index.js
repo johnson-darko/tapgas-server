@@ -81,6 +81,7 @@ app.post('/auth/verify-code', async (req, res) => {
 
 const PORT = process.env.PORT || 4000;
 // Order placement endpoint
+const crypto = require('crypto');
 app.post('/order', async (req, res) => {
   console.log('Session on /order:', req.session);
   if (!req.session.user) {
@@ -105,12 +106,14 @@ app.post('/order', async (req, res) => {
   if (!address || !cylinderType || !payment) {
     return res.status(400).json({ error: 'Missing required order details' });
   }
-  await pool.query(
+  // Generate a unique order_id (e.g., 8-char hex string)
+  const orderId = crypto.randomBytes(4).toString('hex');
+  const insertResult = await pool.query(
     `INSERT INTO orders (
-      email, customer_name, address, location_lat, location_lng, cylinder_type, filled, unique_code, status, date, amount_paid, notes, payment_method, service_type, time_slot, delivery_window
+      email, customer_name, address, location_lat, location_lng, cylinder_type, filled, unique_code, status, date, amount_paid, notes, payment_method, service_type, time_slot, delivery_window, order_id
     ) VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
-    )`,
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+    ) RETURNING *`,
     [
       req.session.user.email,
       customerName || null,
@@ -127,10 +130,12 @@ app.post('/order', async (req, res) => {
       payment || null,
       serviceType || null,
       timeSlot || null,
-      deliveryWindow || null
+      deliveryWindow || null,
+      orderId
     ]
   );
-  res.json({ success: true });
+  const newOrder = insertResult.rows[0];
+  res.json({ success: true, order: newOrder });
 });
 
 
@@ -146,4 +151,40 @@ app.post('/profile', async (req, res) => {
   res.json({ success: true });
 });
 
+
+// Customer: check/update a specific order by email and uniqueCode
+app.post('/order/check', async (req, res) => {
+  const { email, uniqueCode } = req.body;
+  if (!email || !uniqueCode) {
+    return res.status(400).json({ error: 'Email and uniqueCode required' });
+  }
+  try {
+    const result = await pool.query(
+      'SELECT * FROM orders WHERE email = $1 AND unique_code = $2 ORDER BY date DESC LIMIT 1',
+      [email, uniqueCode]
+    );
+    if (!result.rows.length) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+    res.json({ success: true, order: result.rows[0] });
+  } catch (err) {
+    console.error('Error checking order:', err);
+    res.status(500).json({ error: 'Failed to check order' });
+  }
+});
+
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+// Admin: fetch all orders
+app.get('/orders', async (req, res) => {
+  if (!req.session.user || req.session.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Forbidden: Admins only' });
+  }
+  try {
+    const result = await pool.query('SELECT * FROM orders ORDER BY date DESC');
+    res.json({ success: true, orders: result.rows });
+  } catch (err) {
+    console.error('Error fetching all orders:', err);
+    res.status(500).json({ error: 'Failed to fetch orders' });
+  }
+});
