@@ -8,6 +8,7 @@ const session = require('express-session');
 const pgSession = require('connect-pg-simple')(session);
 const { Pool } = require('pg');
 
+
 const app = express();
 app.use(bodyParser.json());
 app.use(cors({
@@ -33,6 +34,51 @@ app.use(session({
     secure: false, // set to true if using HTTPS
   },
 }));
+
+// Driver: fetch only orders assigned to this driver
+app.get('/driver/orders', async (req, res) => {
+  if (!req.session.user || req.session.user.role !== 'driver') {
+    return res.status(403).json({ error: 'Forbidden: Drivers only' });
+  }
+  try {
+    const result = await pool.query('SELECT * FROM orders WHERE driver_email = $1 ORDER BY date DESC', [req.session.user.email]);
+    res.json({ success: true, orders: result.rows });
+  } catch (err) {
+    console.error('Error fetching driver orders:', err);
+    res.status(500).json({ error: 'Failed to fetch driver orders' });
+  }
+});
+// Admin: assign a cluster of orders to a driver
+app.post('/assign-cluster', async (req, res) => {
+  if (!req.session.user || req.session.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Forbidden: Admins only' });
+  }
+  const { driver_email, order_ids } = req.body;
+  if (!driver_email || !Array.isArray(order_ids) || order_ids.length === 0) {
+    return res.status(400).json({ error: 'driver_email and order_ids[] required' });
+  }
+  try {
+    // Insert assignment record
+    await pool.query(
+      'INSERT INTO assigned_clusters (driver_email, order_ids) VALUES ($1, $2)',
+      [driver_email, order_ids]
+    );
+    // Optionally, update orders table to mark these orders as assigned to driver
+    await pool.query(
+      'UPDATE orders SET driver_email = $1 WHERE order_id = ANY($2)',
+      [driver_email, order_ids]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    if (err.code === '23505') { // Unique violation
+      res.status(400).json({ error: 'This cluster is already assigned to this driver.' });
+    } else {
+      console.error('Error assigning cluster:', err);
+      res.status(500).json({ error: 'Failed to assign cluster' });
+    }
+  }
+});
+
 
 // Global API request logger (only logs /auth and /order)
 app.use((req, res, next) => {
@@ -181,10 +227,12 @@ app.get('/orders', async (req, res) => {
     return res.status(403).json({ error: 'Forbidden: Admins only' });
   }
   try {
-    const result = await pool.query('SELECT * FROM orders ORDER BY date DESC');
-    res.json({ success: true, orders: result.rows });
+    const ordersResult = await pool.query('SELECT * FROM orders ORDER BY date DESC');
+    const driversResult = await pool.query("SELECT email FROM users WHERE role = 'driver'");
+    const drivers = driversResult.rows.map(row => row.email);
+    res.json({ success: true, orders: ordersResult.rows, drivers });
   } catch (err) {
-    console.error('Error fetching all orders:', err);
-    res.status(500).json({ error: 'Failed to fetch orders' });
+    console.error('Error fetching all orders or drivers:', err);
+    res.status(500).json({ error: 'Failed to fetch orders or drivers' });
   }
 });
