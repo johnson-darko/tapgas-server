@@ -219,6 +219,32 @@ app.post('/order/check', async (req, res) => {
   }
 });
 
+
+// Driver: batch update order statuses
+app.post('/driver/update-orders', async (req, res) => {
+  if (!req.session.user || req.session.user.role !== 'driver') {
+    return res.status(403).json({ error: 'Forbidden: Drivers only' });
+  }
+  const { updates } = req.body;
+  if (!Array.isArray(updates) || updates.length === 0) {
+    return res.status(400).json({ error: 'No updates provided' });
+  }
+  try {
+    for (const update of updates) {
+      const { orderId, status, failedNote } = update;
+      if (!orderId || !status) continue;
+      await pool.query(
+        'UPDATE orders SET status = $1, failed_note = $2 WHERE order_id = $3 AND driver_email = $4',
+        [status, failedNote || null, orderId, req.session.user.email]
+      );
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error updating driver orders:', err);
+    res.status(500).json({ error: 'Failed to update orders' });
+  }
+});
+
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // Admin: fetch all orders
