@@ -121,13 +121,35 @@ app.post('/auth/verify-code', async (req, res) => {
      ON CONFLICT (email) DO NOTHING`,
     [email]
   );
-  // Always fetch user role after insert
-  const userResult = await pool.query('SELECT role FROM users WHERE email = $1', [email]);
-  const role = userResult.rows[0]?.role || 'customer';
-  console.log('Fetched user role for', email, ':', role); // DEBUG LOG
+  // Check if user has a referral_code
+  let userResult = await pool.query('SELECT role, referral_code FROM users WHERE email = $1', [email]);
+  let role = userResult.rows[0]?.role || 'customer';
+  let referral_code = userResult.rows[0]?.referral_code;
+  if (!referral_code) {
+    // Generate a unique referral code: 2 uppercase letters + 4 digits
+    function makeCode() {
+      const letters = String.fromCharCode(65 + Math.floor(Math.random() * 26)) + String.fromCharCode(65 + Math.floor(Math.random() * 26));
+      const digits = Math.floor(1000 + Math.random() * 9000);
+      return letters + digits;
+    }
+    let unique = false;
+    let newCode = '';
+    while (!unique) {
+      newCode = makeCode();
+      const check = await pool.query('SELECT 1 FROM users WHERE referral_code = $1', [newCode]);
+      if (check.rowCount === 0) unique = true;
+    }
+    await pool.query('UPDATE users SET referral_code = $1 WHERE email = $2', [newCode, email]);
+    referral_code = newCode;
+  }
+  // Always fetch user role and referral_code after insert/update
+  userResult = await pool.query('SELECT role, referral_code FROM users WHERE email = $1', [email]);
+  role = userResult.rows[0]?.role || 'customer';
+  referral_code = userResult.rows[0]?.referral_code;
+  console.log('Fetched user role for', email, ':', role, 'Referral code:', referral_code); // DEBUG LOG
   // Generate JWT
   const token = jwt.sign({ email, role }, process.env.JWT_SECRET || 'tapgas_jwt_secret', { expiresIn: '60d' });
-  res.json({ success: true, user: { email, role }, token });
+  res.json({ success: true, user: { email, role, referral_code }, token });
 });
 
 const PORT = process.env.PORT || 4000;
@@ -155,8 +177,36 @@ app.post('/order', requireAuth, async (req, res) => {
     payment,
     serviceType,
     timeSlot,
-    deliveryWindow
+    deliveryWindow,
+    referralCode
   } = req.body;
+
+  // Explicitly check referral code validity before placing order
+  if (referralCode && referralCode.trim() !== "") {
+    // Debug: log referral code received
+    console.log('[Order] Referral code received:', referralCode);
+    // Fetch user's own referral_code and referred_by from DB
+    const userRes = await pool.query('SELECT referral_code, referred_by FROM users WHERE email = $1', [req.user.email]);
+    const myReferralCode = userRes.rows[0]?.referral_code;
+    const alreadyReferred = userRes.rows[0]?.referred_by;
+    const codeToCheck = referralCode.trim();
+    // Check if referral code is user's own
+    if (codeToCheck === myReferralCode) {
+      console.log('[Order] User tried to use their own referral code.');
+      return res.status(400).json({ error: "You cannot use your own referral code." });
+    }
+    // Check if referral code exists in users table (exact match)
+    const refUser = await pool.query('SELECT email FROM users WHERE referral_code = $1', [codeToCheck]);
+    console.log('[Order] Referral code lookup result:', refUser.rows);
+    if (refUser.rows.length === 0) {
+      console.log('[Order] Invalid referral code entered:', codeToCheck);
+      return res.status(400).json({ error: "Invalid referral code. Please check and try again." });
+    }
+    // Only set referred_by if not already set (NULL or empty string)
+    if (!alreadyReferred || alreadyReferred === "") {
+      await pool.query('UPDATE users SET referred_by = $1 WHERE email = $2', [codeToCheck, req.user.email]);
+    }
+  }
   if (!address || !cylinderType || !payment) {
     return res.status(400).json({ error: 'Missing required order details' });
   }
@@ -164,12 +214,12 @@ app.post('/order', requireAuth, async (req, res) => {
   const orderId = crypto.randomBytes(4).toString('hex');
   const insertResult = await pool.query(
     `INSERT INTO orders (
-      email, customer_name, address, location_lat, location_lng, cylinder_type, filled, unique_code, status, date, amount_paid, notes, payment_method, service_type, time_slot, delivery_window, order_id
+      email, customer_name, address, location_lat, location_lng, cylinder_type, filled, unique_code, status, date, amount_paid, notes, payment_method, service_type, time_slot, delivery_window, order_id, referral_code
     ) VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
     ) RETURNING *`,
     [
-  req.user.email,
+      req.user.email,
       customerName || null,
       address,
       location && location.lat ? location.lat : null,
@@ -185,7 +235,8 @@ app.post('/order', requireAuth, async (req, res) => {
       serviceType || null,
       timeSlot || null,
       deliveryWindow || null,
-      orderId
+      orderId,
+      referralCode ? referralCode.trim() : null
     ]
   );
   const newOrder = insertResult.rows[0];
@@ -243,10 +294,40 @@ app.post('/driver/update-orders', requireAuth, async (req, res) => {
     for (const update of updates) {
       const { orderId, status, failedNote } = update;
       if (!orderId || !status) continue;
+      // Update order status
       await pool.query(
         'UPDATE orders SET status = $1, failed_note = $2 WHERE order_id = $3 AND driver_email = $4',
         [status, failedNote || null, orderId, req.user.email]
       );
+      // If delivered, check for referral reward
+      if (status === 'delivered') {
+        // Get the order and user
+        const orderRes = await pool.query('SELECT * FROM orders WHERE order_id = $1', [orderId]);
+        const order = orderRes.rows[0];
+        if (!order) continue;
+        // Only LPG refill orders (not buy cylinder)
+        if ((order.cylinder_type || '').toLowerCase().includes('refill')) {
+          // Check if this is the user's first delivered LPG refill order
+          const countRes = await pool.query(
+            `SELECT COUNT(*) FROM orders WHERE email = $1 AND status = 'delivered' AND (cylinder_type ILIKE '%refill%')`,
+            [order.email]
+          );
+          const deliveredCount = parseInt(countRes.rows[0].count, 10);
+          if (deliveredCount === 1) {
+            // Get referred_by for this user
+            const userRes = await pool.query('SELECT referred_by FROM users WHERE email = $1', [order.email]);
+            const referredBy = userRes.rows[0]?.referred_by;
+            if (referredBy) {
+              // Increment referrer's reward count (use a rewards table or add a referral_rewards INT column)
+              // For now, accumulate in referral_rewarded as a count
+              await pool.query(
+                `UPDATE users SET referral_rewarded = COALESCE(referral_rewarded, 0) + 1 WHERE referral_code = $1`,
+                [referredBy]
+              );
+            }
+          }
+        }
+      }
     }
     res.json({ success: true });
   } catch (err) {
@@ -257,6 +338,21 @@ app.post('/driver/update-orders', requireAuth, async (req, res) => {
 
 
 // Only allow known API routes
+// Referral reward status endpoint (JWT protected)
+app.get('/api/referral/status', requireAuth, async (req, res) => {
+  try {
+    const userRes = await pool.query('SELECT referral_rewarded FROM users WHERE email = $1', [req.user.email]);
+    const rewardCount = parseInt(userRes.rows[0]?.referral_rewarded || 0, 10);
+    res.json({
+      success: true,
+      rewardCount,
+      rewardValue: rewardCount * 1.5 // 1.5 cedis per reward
+    });
+  } catch (err) {
+    console.error('Error fetching referral status:', err);
+    res.status(500).json({ error: 'Failed to fetch referral status' });
+  }
+});
 app.use((req, res, next) => {
   if (!req.path.startsWith('/auth') &&
       !req.path.startsWith('/order') &&
