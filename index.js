@@ -1,4 +1,4 @@
-// ...existing code...
+
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
@@ -8,8 +8,11 @@ const session = require('express-session');
 const pgSession = require('connect-pg-simple')(session);
 const { Pool } = require('pg');
 
-
 const app = express();
+// Debug endpoint: print current session (must be after app is defined)
+app.get('/debug/session', (req, res) => {
+  res.json({ session: req.session, cookies: req.headers.cookie });
+});
 app.use(bodyParser.json());
 app.use(cors({
   origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
@@ -20,6 +23,8 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
+// Production-ready session cookie config (Render + GitHub Pages)
+// Set SESSION_COOKIE_SECURE=true, SESSION_COOKIE_SAMESITE=none, CORS_ORIGIN=https://johnson-darko.github.io in Render env
 app.use(session({
   store: new pgSession({
     pool: pool,
@@ -32,7 +37,7 @@ app.use(session({
     maxAge: 60 * 24 * 60 * 60 * 1000, // 60 days (2 months)
     httpOnly: true,
     secure: process.env.SESSION_COOKIE_SECURE === 'true',
-    sameSite: 'none', // <--- THIS IS CRITICAL
+    sameSite: process.env.SESSION_COOKIE_SAMESITE || 'none',
   },
 }));
 
