@@ -245,6 +245,20 @@ app.post('/driver/update-orders', async (req, res) => {
   }
 });
 
+
+// Only allow known API routes
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/auth') &&
+      !req.path.startsWith('/order') &&
+      !req.path.startsWith('/driver') &&
+      !req.path.startsWith('/assign-cluster') &&
+      !req.path.startsWith('/profile') &&
+      !req.path.startsWith('/orders')) {
+    return res.status(404).send('Not found');
+  }
+  next();
+});
+
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // Admin: fetch all orders
