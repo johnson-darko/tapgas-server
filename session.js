@@ -14,9 +14,10 @@ function setupSession(app) {
     resave: false,
     saveUninitialized: false,
     cookie: {
-      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+      maxAge: 60 * 24 * 60 * 60 * 1000, // 60 days
       httpOnly: true,
-      secure: false, // set to true if using HTTPS
+      secure: process.env.SESSION_COOKIE_SECURE === 'true',
+      sameSite: 'none',
     },
   }));
 }
