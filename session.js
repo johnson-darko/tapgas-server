@@ -17,7 +17,7 @@ function setupSession(app) {
       maxAge: 60 * 24 * 60 * 60 * 1000, // 60 days
       httpOnly: true,
       secure: process.env.SESSION_COOKIE_SECURE === 'true',
-      sameSite: 'none',
+      sameSite: process.env.SESSION_COOKIE_SAMESITE || 'none'
     },
   }));
 }

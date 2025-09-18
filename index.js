@@ -32,6 +32,7 @@ app.use(session({
     maxAge: 60 * 24 * 60 * 60 * 1000, // 60 days (2 months)
     httpOnly: true,
     secure: process.env.SESSION_COOKIE_SECURE === 'true',
+    sameSite: 'none', // <--- THIS IS CRITICAL
   },
 }));
 
