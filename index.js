@@ -1,62 +1,62 @@
+const jwt = require('jsonwebtoken');
 
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
 require('dotenv').config();
 
-const session = require('express-session');
-const pgSession = require('connect-pg-simple')(session);
+// Remove session/cookie dependencies for JWT auth
 const { Pool } = require('pg');
 
 const app = express();
-// Debug endpoint: print current session (must be after app is defined)
-app.get('/debug/session', (req, res) => {
-  res.json({ session: req.session, cookies: req.headers.cookie });
-});
 app.use(bodyParser.json());
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
-  credentials: true
+  origin: process.env.NODE_ENV === 'production'
+    ? 'https://johnson-darko.github.io' // <-- replace with your actual GitHub Pages URL
+    : 'http://localhost:5173',
+  // For JWT, credentials should be false or omitted
 }));
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
-// Production-ready session cookie config (Render + GitHub Pages)
-// Set SESSION_COOKIE_SECURE=true, SESSION_COOKIE_SAMESITE=none, CORS_ORIGIN=https://johnson-darko.github.io in Render env
-app.use(session({
-  store: new pgSession({
-    pool: pool,
-    tableName: 'session',
-  }),
-  secret: process.env.SESSION_SECRET || 'tapgas_secret',
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    maxAge: 60 * 24 * 60 * 60 * 1000, // 60 days (2 months)
-    httpOnly: true,
-    secure: process.env.SESSION_COOKIE_SECURE === 'true',
-    sameSite: process.env.SESSION_COOKIE_SAMESITE || 'none',
-  },
-}));
 
-// Driver: fetch only orders assigned to this driver
-app.get('/driver/orders', async (req, res) => {
-  if (!req.session.user || req.session.user.role !== 'driver') {
+// JWT auth middleware
+function requireAuth(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Missing or invalid Authorization header' });
+  }
+  const token = authHeader.split(' ')[1];
+  console.log('JWT from header (backend):', token);
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'tapgas_jwt_secret');
+    console.log('Decoded JWT (backend):', decoded);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    console.error('JWT verification error:', err);
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  }
+}
+
+// Driver: fetch only orders assigned to this driver (JWT protected)
+app.get('/driver/orders', requireAuth, async (req, res) => {
+  if (req.user.role !== 'driver') {
     return res.status(403).json({ error: 'Forbidden: Drivers only' });
   }
   try {
-    const result = await pool.query('SELECT * FROM orders WHERE driver_email = $1 ORDER BY date DESC', [req.session.user.email]);
+    const result = await pool.query('SELECT * FROM orders WHERE driver_email = $1 ORDER BY date DESC', [req.user.email]);
     res.json({ success: true, orders: result.rows });
   } catch (err) {
     console.error('Error fetching driver orders:', err);
     res.status(500).json({ error: 'Failed to fetch driver orders' });
   }
 });
-// Admin: assign a cluster of orders to a driver
-app.post('/assign-cluster', async (req, res) => {
-  if (!req.session.user || req.session.user.role !== 'admin') {
+// Admin: assign a cluster of orders to a driver (JWT protected)
+app.post('/assign-cluster', requireAuth, async (req, res) => {
+  if (req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Forbidden: Admins only' });
   }
   const { driver_email, order_ids } = req.body;
@@ -115,8 +115,7 @@ app.post('/auth/verify-code', async (req, res) => {
   if (!result.rows.length) return res.status(400).json({ error: 'No code found' });
   const row = result.rows[0];
   if (row.code !== code || Date.now() > row.expires) return res.status(400).json({ error: 'Invalid or expired code' });
-  // Create/find user, set session
-  // Insert user if not exists
+  // Create/find user
   await pool.query(
     `INSERT INTO users (email) VALUES ($1)
      ON CONFLICT (email) DO NOTHING`,
@@ -126,17 +125,20 @@ app.post('/auth/verify-code', async (req, res) => {
   const userResult = await pool.query('SELECT role FROM users WHERE email = $1', [email]);
   const role = userResult.rows[0]?.role || 'customer';
   console.log('Fetched user role for', email, ':', role); // DEBUG LOG
-  req.session.user = { email, role };
-  console.log('Session after verify-code:', req.session);
-  res.json({ success: true, user: { email, role } });
+  // Generate JWT
+  const token = jwt.sign({ email, role }, process.env.JWT_SECRET || 'tapgas_jwt_secret', { expiresIn: '60d' });
+  res.json({ success: true, user: { email, role }, token });
 });
 
 const PORT = process.env.PORT || 4000;
 // Order placement endpoint
 const crypto = require('crypto');
-app.post('/order', async (req, res) => {
-  console.log('Session on /order:', req.session);
-  if (!req.session.user) {
+// Order placement endpoint (JWT protected)
+app.post('/order', requireAuth, async (req, res) => {
+  // Debug: log Authorization header and decoded JWT
+  console.log('[Server /order] Authorization header:', req.headers['authorization']);
+  console.log('[Server /order] req.user:', req.user);
+  if (!req.user) {
     return res.status(401).json({ error: 'Not logged in' });
   }
   const {
@@ -167,7 +169,7 @@ app.post('/order', async (req, res) => {
       $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
     ) RETURNING *`,
     [
-      req.session.user.email,
+  req.user.email,
       customerName || null,
       address,
       location && location.lat ? location.lat : null,
@@ -192,13 +194,14 @@ app.post('/order', async (req, res) => {
 
 
 // Update user profile (name, phone_number)
-app.post('/profile', async (req, res) => {
-  if (!req.session.user) return res.status(401).json({ error: 'Not logged in' });
+// Update user profile (JWT protected)
+app.post('/profile', requireAuth, async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Not logged in' });
   const { name, phone_number } = req.body;
   if (!name || !phone_number) return res.status(400).json({ error: 'Name and phone number required' });
   await pool.query(
     'UPDATE users SET name = $1, phone_number = $2 WHERE email = $3',
-    [name, phone_number, req.session.user.email]
+    [name, phone_number, req.user.email]
   );
   res.json({ success: true });
 });
@@ -227,8 +230,9 @@ app.post('/order/check', async (req, res) => {
 
 
 // Driver: batch update order statuses
-app.post('/driver/update-orders', async (req, res) => {
-  if (!req.session.user || req.session.user.role !== 'driver') {
+// Driver: batch update order statuses (JWT protected)
+app.post('/driver/update-orders', requireAuth, async (req, res) => {
+  if (req.user.role !== 'driver') {
     return res.status(403).json({ error: 'Forbidden: Drivers only' });
   }
   const { updates } = req.body;
@@ -241,7 +245,7 @@ app.post('/driver/update-orders', async (req, res) => {
       if (!orderId || !status) continue;
       await pool.query(
         'UPDATE orders SET status = $1, failed_note = $2 WHERE order_id = $3 AND driver_email = $4',
-        [status, failedNote || null, orderId, req.session.user.email]
+        [status, failedNote || null, orderId, req.user.email]
       );
     }
     res.json({ success: true });
@@ -268,8 +272,9 @@ app.use((req, res, next) => {
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // Admin: fetch all orders
-app.get('/orders', async (req, res) => {
-  if (!req.session.user || req.session.user.role !== 'admin') {
+// Admin: fetch all orders (JWT protected)
+app.get('/orders', requireAuth, async (req, res) => {
+  if (req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Forbidden: Admins only' });
   }
   try {
