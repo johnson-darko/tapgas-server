@@ -12,7 +12,7 @@ const { Pool } = require('pg');
 const app = express();
 app.use(bodyParser.json());
 app.use(cors({
-  origin: 'http://localhost:5173',
+  origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
   credentials: true
 }));
 
@@ -31,7 +31,7 @@ app.use(session({
   cookie: {
     maxAge: 60 * 24 * 60 * 60 * 1000, // 60 days (2 months)
     httpOnly: true,
-    secure: false, // set to true if using HTTPS
+    secure: process.env.SESSION_COOKIE_SECURE === 'true',
   },
 }));
 
