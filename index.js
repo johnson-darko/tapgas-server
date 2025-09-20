@@ -11,9 +11,13 @@ const { Pool } = require('pg');
 const app = express();
 app.use(bodyParser.json());
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production'
-    ? 'https://johnson-darko.github.io' // <-- replace with your actual GitHub Pages URL
-    : 'http://localhost:5173',
+  origin: [
+    'https://gasmanapp.com',
+    'https://www.gasmanapp.com',
+    'https://johnson-darko.github.io',
+    'http://localhost:5173',
+    'http://127.0.0.1:5173'
+  ],
   // For JWT, credentials should be false or omitted
 }));
 
