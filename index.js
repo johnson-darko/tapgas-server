@@ -292,11 +292,11 @@ app.post('/order', requireAuth, async (req, res) => {
 // Update user profile (JWT protected)
 app.post('/profile', requireAuth, async (req, res) => {
   if (!req.user) return res.status(401).json({ error: 'Not logged in' });
-  const { name, phone_number } = req.body;
+  const { name, phone_number, cylinders_count } = req.body;
   if (!name || !phone_number) return res.status(400).json({ error: 'Name and phone number required' });
   await pool.query(
-    'UPDATE users SET name = $1, phone_number = $2 WHERE email = $3',
-    [name, phone_number, req.user.email]
+    'UPDATE users SET name = $1, phone_number = $2, cylinders_count = $3 WHERE email = $4',
+    [name, phone_number, cylinders_count || null, req.user.email]
   );
   res.json({ success: true });
 });
