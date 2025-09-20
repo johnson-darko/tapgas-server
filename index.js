@@ -110,7 +110,47 @@ app.post('/auth/send-code', async (req, res) => {
 
 app.post('/auth/verify-code', async (req, res) => {
   const { email, code } = req.body;
-  if (!email || !code) return res.status(400).json({ error: 'Email and code required' });
+  if (!email) return res.status(400).json({ error: 'Email required' });
+  // Special bypass for test@gmail.com (for Google Play review)
+  if (email === 'test@gmail.com') {
+    // Create/find user
+    await pool.query(
+      `INSERT INTO users (email) VALUES ($1)
+       ON CONFLICT (email) DO NOTHING`,
+      [email]
+    );
+    // Check if user has a referral_code
+    let userResult = await pool.query('SELECT role, referral_code FROM users WHERE email = $1', [email]);
+    let role = userResult.rows[0]?.role || 'customer';
+    let referral_code = userResult.rows[0]?.referral_code;
+    if (!referral_code) {
+      // Generate a unique referral code: 2 uppercase letters + 4 digits
+      function makeCode() {
+        const letters = String.fromCharCode(65 + Math.floor(Math.random() * 26)) + String.fromCharCode(65 + Math.floor(Math.random() * 26));
+        const digits = Math.floor(1000 + Math.random() * 9000);
+        return letters + digits;
+      }
+      let unique = false;
+      let newCode = '';
+      while (!unique) {
+        newCode = makeCode();
+        const check = await pool.query('SELECT 1 FROM users WHERE referral_code = $1', [newCode]);
+        if (check.rowCount === 0) unique = true;
+      }
+      await pool.query('UPDATE users SET referral_code = $1 WHERE email = $2', [newCode, email]);
+      referral_code = newCode;
+    }
+    // Always fetch user role and referral_code after insert/update
+    userResult = await pool.query('SELECT role, referral_code FROM users WHERE email = $1', [email]);
+    role = userResult.rows[0]?.role || 'customer';
+    referral_code = userResult.rows[0]?.referral_code;
+    console.log('Fetched user role for', email, ':', role, 'Referral code:', referral_code, '(bypass login code)');
+    // Generate JWT
+    const token = jwt.sign({ email, role }, process.env.JWT_SECRET || 'tapgas_jwt_secret', { expiresIn: '60d' });
+    return res.json({ success: true, user: { email, role, referral_code }, token });
+  }
+  // Normal flow for all other users
+  if (!code) return res.status(400).json({ error: 'Email and code required' });
   const result = await pool.query('SELECT * FROM login_codes WHERE email = $1', [email]);
   if (!result.rows.length) return res.status(400).json({ error: 'No code found' });
   const row = result.rows[0];
