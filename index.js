@@ -207,6 +207,8 @@ app.post('/order', requireAuth, async (req, res) => {
   if (!req.user) {
     return res.status(401).json({ error: 'Not logged in' });
   }
+  // Debug: log incoming order body for troubleshooting
+  console.log('[Server /order] Incoming req.body:', req.body);
   const {
     customerName,
     address,
